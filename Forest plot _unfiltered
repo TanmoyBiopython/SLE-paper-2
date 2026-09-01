@@ -1,0 +1,212 @@
+###############################################################################
+# Forest plot - odds ratios for study-panel pathogen seropositivity
+# SLE (n = 24) versus healthy controls (n = 34)
+#
+# Self-contained: recomputes the odds ratios from the raw counts using the same
+# Haldane-Anscombe / Woolf method as seropositivity_analysis.R, then plots.
+#
+# Renders to the Plots pane. Export manually with Export > Save as PDF.
+###############################################################################
+
+library(ggplot2)
+library(grid)   # unit(), arrow()
+
+## ---- 1. Counts -------------------------------------------------------------
+
+n_sle <- 24L
+n_hc  <- 34L
+
+dat <- data.frame(
+  pathogen = c("JE", "DENV", "Zika", "WNV", "CHIKV",
+               "M. pneumoniae", "C. pneumoniae", "C. trachomatis",
+               "Leptospira", "Scrub typhus", "Brucella"),
+  group    = c(rep("Arboviral", 5), rep("Bacterial", 6)),
+  a        = c(0L, 1L, 6L, 8L, 7L, 1L, 3L, 3L, 0L, 0L, 1L),
+  c        = c(0L, 0L, 3L, 9L, 0L, 1L, 1L, 2L, 0L, 0L, 2L),
+  stringsAsFactors = FALSE
+)
+dat$b <- n_sle - dat$a
+dat$d <- n_hc  - dat$c
+
+## ---- 2. Odds ratios --------------------------------------------------------
+
+or_woolf <- function(a, b, c, d, conf = 0.95) {
+  if ((a + c) == 0) return(c(or = NA_real_, lo = NA_real_, hi = NA_real_))
+  if (any(c(a, b, c, d) == 0)) { a <- a + .5; b <- b + .5; c <- c + .5; d <- d + .5 }
+  or <- (a * d) / (b * c)
+  se <- sqrt(1/a + 1/b + 1/c + 1/d)
+  z  <- qnorm(1 - (1 - conf) / 2)
+  c(or = or, lo = exp(log(or) - z * se), hi = exp(log(or) + z * se))
+}
+
+est <- t(mapply(or_woolf, dat$a, dat$b, dat$c, dat$d))
+dat <- cbind(dat, as.data.frame(est))
+
+dat$p_raw <- mapply(function(a, b, c, d) {
+  if ((a + c) == 0) return(NA_real_)
+  fisher.test(matrix(c(a, b, c, d), nrow = 2, byrow = TRUE))$p.value
+}, dat$a, dat$b, dat$c, dat$d)
+dat$p_bh <- p.adjust(dat$p_raw, method = "BH", n = nrow(dat))
+
+## ---- 3. Composite measures (reported unadjusted) ---------------------------
+## Any panel pathogen, and co-reactivity against two or more panel pathogens.
+
+comp <- data.frame(
+  pathogen = c("Any panel pathogen", "Co-reactivity (>=2)"),
+  group    = "Composite",
+  a = c(14L, 7L), c = c(12L, 4L),
+  stringsAsFactors = FALSE
+)
+comp$b <- n_sle - comp$a
+comp$d <- n_hc  - comp$c
+comp <- cbind(comp, as.data.frame(t(mapply(or_woolf, comp$a, comp$b, comp$c, comp$d))))
+comp$p_raw <- mapply(function(a, b, c, d)
+  fisher.test(matrix(c(a, b, c, d), nrow = 2, byrow = TRUE))$p.value,
+  comp$a, comp$b, comp$c, comp$d)
+comp$p_bh <- NA_real_
+
+## Composite rows are excluded from the figure. They remain available: set the
+## flag to TRUE to add an extra facet with the two summary measures.
+include_composite <- FALSE
+pd <- if (include_composite) rbind(dat, comp) else dat
+
+## ---- 4. Plot data ----------------------------------------------------------
+
+## Axis window. Estimates outside it are drawn with an arrowhead rather than
+## being allowed to stretch the scale; the CHIKV upper limit reaches 548.
+x_lo <- 0.05
+x_hi <- 100
+
+pd$lo_clip  <- pmax(pd$lo, x_lo)
+pd$hi_clip  <- pmin(pd$hi, x_hi)
+pd$hi_trunc <- !is.na(pd$hi) & pd$hi > x_hi
+pd$lo_trunc <- !is.na(pd$lo) & pd$lo < x_lo
+
+pd$estimable <- !is.na(pd$or)
+pd$sig <- !is.na(pd$p_bh) & pd$p_bh < 0.05
+
+## Row order: grouped, and within group by descending odds ratio.
+## Non-estimable pathogens sit at the foot of their group.
+ord <- order(factor(pd$group, levels = c("Arboviral", "Bacterial", "Composite")),
+             -ifelse(is.na(pd$or), -Inf, pd$or))
+pd <- pd[ord, ]
+pd$pathogen <- factor(pd$pathogen, levels = rev(pd$pathogen))
+pd$group    <- factor(pd$group, levels = c("Arboviral", "Bacterial", "Composite"))
+
+## Annotation strings
+pd$lab_sle <- sprintf("%d/%d (%.1f%%)", pd$a, n_sle, 100 * pd$a / n_sle)
+pd$lab_hc  <- sprintf("%d/%d (%.1f%%)", pd$c, n_hc,  100 * pd$c / n_hc)
+pd$lab_or  <- ifelse(is.na(pd$or), "Not estimable",
+                     sprintf("%.2f (%.2f–%.2f)", pd$or, pd$lo, pd$hi))
+pd$lab_p   <- ifelse(is.na(pd$p_raw), "–",
+              ifelse(!is.na(pd$p_bh),
+                     ifelse(pd$p_bh < 0.001, "<0.001", sprintf("%.3f", pd$p_bh)),
+                     sprintf("%.3f†", pd$p_raw)))
+pd$lab_p[pd$sig] <- paste0(pd$lab_p[pd$sig], "*")
+
+## ---- 5. Aesthetics ---------------------------------------------------------
+## Two hues, validated for colour-vision-deficiency separation. Composite rows
+## are deliberately neutral so they read as summaries, not as a third category.
+## Text stays in grey ink; the coloured mark alone carries identity.
+
+pal <- c("Arboviral" = "#1F6FB2", "Bacterial" = "#D95F02", "Composite" = "#5A5A5A")
+
+## The panel is deliberately wider than the data. Estimates occupy 0.05-100;
+## the space to the right of the separator holds the numeric columns, so no
+## off-panel clipping is involved and nothing needs margin tuning.
+x_breaks <- c(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100)
+x_sep    <- 165      # separator between plot and numeric columns
+x_or     <- 430      # OR (95% CI) column
+x_p      <- 2600     # BH p column
+x_pad    <- 9000     # right edge of the panel
+
+show_table <- TRUE   # set FALSE for a bare graphical forest plot
+
+## Column headers, drawn once in the uppermost facet
+hdr <- data.frame(
+  group    = factor(pd$group[1],    levels = levels(pd$group)),
+  pathogen = factor(pd$pathogen[1], levels = levels(pd$pathogen)),
+  x        = c(x_or, x_p),
+  lab      = c("OR (95% CI)", "BH p"),
+  stringsAsFactors = FALSE
+)
+
+p <- ggplot(pd, aes(x = or, y = pathogen, colour = group)) +
+
+  ## no-effect reference
+  geom_vline(xintercept = 1, linetype = "dashed", colour = "grey55", linewidth = 0.45) +
+
+  ## confidence intervals
+  geom_errorbarh(aes(xmin = lo_clip, xmax = hi_clip),
+                 height = 0, linewidth = 0.65, na.rm = TRUE) +
+
+  ## arrowhead where an interval runs past the plotted range
+  geom_segment(data = subset(pd, hi_trunc),
+               aes(x = x_hi * 0.72, xend = x_hi, y = pathogen, yend = pathogen),
+               arrow = arrow(length = unit(0.16, "cm"), type = "closed"),
+               linewidth = 0.65, na.rm = TRUE) +
+
+  ## point estimates; solid where significant after correction, hollow otherwise
+  geom_point(aes(shape = sig), size = 2.9, stroke = 0.9, fill = "white", na.rm = TRUE) +
+  scale_shape_manual(values = c(`FALSE` = 21, `TRUE` = 16), guide = "none") +
+
+  ## rows with no positives carry a label instead of a mark
+  geom_text(data = subset(pd, !estimable),
+            aes(x = 1, y = pathogen, label = "no positives in either group"),
+            inherit.aes = FALSE, colour = "grey45", size = 2.9, fontface = "italic") +
+
+  ## numeric columns
+  {if (show_table) geom_vline(xintercept = x_sep, colour = "grey88", linewidth = 0.4)} +
+  {if (show_table) geom_text(aes(x = x_or, label = lab_or), hjust = 0.5, size = 3.0,
+                             colour = "grey20", show.legend = FALSE)} +
+  {if (show_table) geom_text(aes(x = x_p,  label = lab_p),  hjust = 0.5, size = 3.0,
+                             colour = "grey20", show.legend = FALSE)} +
+  {if (show_table) geom_text(data = hdr, aes(x = x, y = pathogen, label = lab),
+                             inherit.aes = FALSE, hjust = 0.5, vjust = -1.7,
+                             size = 3.1, fontface = "bold", colour = "grey15")} +
+
+  scale_x_log10(breaks = x_breaks, labels = as.character(x_breaks),
+                limits = c(0.05, if (show_table) x_pad else 120),
+                expand = expansion(mult = c(0.02, 0))) +
+  scale_y_discrete(expand = expansion(add = c(0.6, 1.3))) +
+  scale_colour_manual(values = pal, name = NULL) +
+
+  labs(
+    x = "Odds ratio (log scale)", y = NULL,
+    title = "Pathogen-specific IgM seropositivity in SLE relative to healthy controls",
+    subtitle = "Haldane-Anscombe corrected odds ratios with Woolf 95% confidence intervals; SLE n = 24, controls n = 34",
+    caption = paste0(
+      "Two-sided Fisher's exact test; Benjamini-Hochberg correction across m = 11. * BH p < 0.05.\n",
+      if (include_composite)
+        "Composite measures are not part of the correction family and are shown unadjusted (dagger).\n" else "",
+      "Arrowheads mark intervals extending beyond the plotted range; the chikungunya upper limit is 548.25.\n",
+      "Points are hollow except where significant after correction.")
+  ) +
+
+  theme_minimal(base_size = 11, base_family = "sans") +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_line(colour = "grey93", linewidth = 0.3),
+    axis.line.x  = element_line(colour = "grey30", linewidth = 0.4),
+    axis.ticks.x = element_line(colour = "grey30", linewidth = 0.4),
+    axis.ticks.y = element_blank(),
+    axis.text.y  = element_text(face = "bold", colour = "grey15", hjust = 1),
+    axis.text.x  = element_text(colour = "grey35", size = 8.5),
+    strip.text.y.left = element_text(angle = 0, face = "bold", hjust = 0, colour = "grey25"),
+    strip.placement = "outside",
+    legend.position = "none",
+    panel.spacing.y = unit(0.5, "lines"),
+    plot.title    = element_text(face = "bold", size = 12),
+    plot.subtitle = element_text(colour = "grey35", size = 9.5),
+    plot.caption  = element_text(colour = "grey40", size = 8, hjust = 0),
+    plot.margin   = margin(10, 14, 10, 10)
+  ) +
+  facet_grid(group ~ ., scales = "free_y", space = "free_y", switch = "y")
+
+print(p)
+
+## The facet strips on the left name the pathogen group, so the colour legend is
+## redundant and is suppressed; identity is never carried by colour alone.
+## Widen the Plots pane before exporting. Suggested size: 9.5 x 6 inches.
+## Set show_table <- FALSE above for a bare forest plot without the numeric columns.
