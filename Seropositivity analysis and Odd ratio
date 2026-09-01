@@ -1,0 +1,153 @@
+###############################################################################
+# Seropositivity analysis - study pathogen panel
+# SLE cases (n = 24) versus healthy controls (n = 34)
+#
+# Outputs: per-pathogen seropositivity with Wilson 95% CI, odds ratio with
+#          Haldane-Anscombe correction and Woolf 95% CI, two-sided Fisher's
+#          exact test, and Benjamini-Hochberg FDR adjustment across m = 11.
+#
+# Base R only. No external packages required.
+###############################################################################
+
+## ---- 1. Counts -------------------------------------------------------------
+## a = SLE seropositive, c = HC seropositive. Denominators are fixed.
+
+n_sle <- 24L
+n_hc  <- 34L
+
+dat <- data.frame(
+  pathogen = c("JE", "DENV", "Zika", "WNV", "CHIKV",
+               "M. pneumoniae", "C. pneumoniae", "C. trachomatis",
+               "Leptospira", "Scrub typhus", "Brucella"),
+  full     = c("Japanese encephalitis virus", "Dengue virus", "Zika virus",
+               "West Nile virus", "Chikungunya virus",
+               "Mycoplasma pneumoniae", "Chlamydia pneumoniae",
+               "Chlamydia trachomatis", "Leptospira spp.",
+               "Orientia tsutsugamushi", "Brucella spp."),
+  group    = c(rep("Arboviral", 5), rep("Bacterial", 6)),
+  a        = c(0L, 1L, 6L, 8L, 7L, 1L, 3L, 3L, 0L, 0L, 1L),   # SLE positive
+  c        = c(0L, 0L, 3L, 9L, 0L, 1L, 1L, 2L, 0L, 0L, 2L),   # HC positive
+  stringsAsFactors = FALSE
+)
+dat$b <- n_sle - dat$a          # SLE negative
+dat$d <- n_hc  - dat$c          # HC negative
+
+## ---- 2. Helper functions ---------------------------------------------------
+
+## Wilson score interval for a single proportion
+wilson_ci <- function(x, n, conf = 0.95) {
+  z  <- qnorm(1 - (1 - conf) / 2)
+  p  <- x / n
+  den <- 1 + z^2 / n
+  centre <- (p + z^2 / (2 * n)) / den
+  half   <- (z * sqrt(p * (1 - p) / n + z^2 / (4 * n^2))) / den
+  c(lower = max(0, centre - half), upper = min(1, centre + half))
+}
+
+## Odds ratio with Haldane-Anscombe correction and Woolf (logit) CI.
+## The correction is applied only when a cell is zero, as is conventional.
+or_woolf <- function(a, b, c, d, conf = 0.95) {
+  if ((a + c) == 0) {                       # no positives in either group
+    return(c(or = NA_real_, lower = NA_real_, upper = NA_real_, corrected = NA))
+  }
+  corrected <- any(c(a, b, c, d) == 0)
+  if (corrected) { a <- a + 0.5; b <- b + 0.5; c <- c + 0.5; d <- d + 0.5 }
+  or <- (a * d) / (b * c)
+  se <- sqrt(1/a + 1/b + 1/c + 1/d)
+  z  <- qnorm(1 - (1 - conf) / 2)
+  c(or = or,
+    lower = exp(log(or) - z * se),
+    upper = exp(log(or) + z * se),
+    corrected = corrected)
+}
+
+## ---- 3. Per-pathogen analysis ----------------------------------------------
+
+res <- do.call(rbind, lapply(seq_len(nrow(dat)), function(i) {
+  r  <- dat[i, ]
+  ws <- wilson_ci(r$a, n_sle)
+  wh <- wilson_ci(r$c, n_hc)
+  o  <- or_woolf(r$a, r$b, r$c, r$d)
+
+  ## Fisher's exact test, two-sided, on the uncorrected table
+  tab <- matrix(c(r$a, r$b, r$c, r$d), nrow = 2, byrow = TRUE,
+                dimnames = list(c("SLE", "HC"), c("Positive", "Negative")))
+  p <- if ((r$a + r$c) == 0) NA_real_ else fisher.test(tab)$p.value
+
+  data.frame(
+    pathogen   = r$pathogen,
+    full       = r$full,
+    group      = r$group,
+    sle_pos    = r$a,
+    sle_pct    = 100 * r$a / n_sle,
+    sle_lo     = 100 * ws["lower"],
+    sle_hi     = 100 * ws["upper"],
+    hc_pos     = r$c,
+    hc_pct     = 100 * r$c / n_hc,
+    hc_lo      = 100 * wh["lower"],
+    hc_hi      = 100 * wh["upper"],
+    or         = unname(o["or"]),
+    or_lo      = unname(o["lower"]),
+    or_hi      = unname(o["upper"]),
+    ha_applied = as.logical(o["corrected"]),
+    p_raw      = p,
+    stringsAsFactors = FALSE
+  )
+}))
+
+## ---- 4. Multiple testing ----------------------------------------------------
+## m = 11: every pathogen in the panel is tested, including those with no
+## positives, so the correction is not applied to a data-dependent subset.
+
+m <- nrow(res)
+res$p_bh <- p.adjust(res$p_raw, method = "BH", n = m)
+res$sig  <- ifelse(is.na(res$p_bh), "",
+             ifelse(res$p_bh < 0.05, "*", ""))
+
+## ---- 5. Overall panel seropositivity ---------------------------------------
+
+panel_sle <- 14L; panel_hc <- 12L
+panel_tab <- matrix(c(panel_sle, n_sle - panel_sle,
+                      panel_hc,  n_hc  - panel_hc), nrow = 2, byrow = TRUE,
+                    dimnames = list(c("SLE", "HC"), c("Positive", "Negative")))
+panel_or  <- or_woolf(panel_sle, n_sle - panel_sle, panel_hc, n_hc - panel_hc)
+panel_p   <- fisher.test(panel_tab)$p.value
+
+## Co-reactivity: two or more panel pathogens in the same participant
+co_sle <- 7L; co_hc <- 4L
+co_tab <- matrix(c(co_sle, n_sle - co_sle, co_hc, n_hc - co_hc),
+                 nrow = 2, byrow = TRUE)
+co_or <- or_woolf(co_sle, n_sle - co_sle, co_hc, n_hc - co_hc)
+co_p  <- fisher.test(co_tab)$p.value
+
+## ---- 6. Report --------------------------------------------------------------
+
+fmt <- function(x, d = 2) ifelse(is.na(x), "NE", formatC(x, format = "f", digits = d))
+
+out <- data.frame(
+  Pathogen = res$pathogen,
+  Group    = res$group,
+  `SLE n (%)`  = sprintf("%d (%.1f)", res$sle_pos, res$sle_pct),
+  `SLE 95% CI` = sprintf("%.1f-%.1f", res$sle_lo, res$sle_hi),
+  `HC n (%)`   = sprintf("%d (%.1f)", res$hc_pos, res$hc_pct),
+  `HC 95% CI`  = sprintf("%.1f-%.1f", res$hc_lo, res$hc_hi),
+  OR       = fmt(res$or),
+  `OR 95% CI` = ifelse(is.na(res$or), "NE",
+                  sprintf("%s-%s", fmt(res$or_lo), fmt(res$or_hi))),
+  `p (Fisher)` = ifelse(is.na(res$p_raw), "NE", formatC(res$p_raw, format = "f", digits = 4)),
+  `p (BH)`     = ifelse(is.na(res$p_bh),  "NE", formatC(res$p_bh,  format = "f", digits = 4)),
+  Sig = res$sig,
+  check.names = FALSE, stringsAsFactors = FALSE
+)
+
+cat("\nSeropositivity by pathogen: SLE (n = 24) vs healthy controls (n = 34)\n\n")
+print(out, row.names = FALSE)
+
+cat(sprintf("\nAny panel pathogen: SLE %d/%d (%.1f%%) vs HC %d/%d (%.1f%%); OR %.2f (%.2f-%.2f), Fisher p = %.4f\n",
+            panel_sle, n_sle, 100*panel_sle/n_sle, panel_hc, n_hc, 100*panel_hc/n_hc,
+            panel_or["or"], panel_or["lower"], panel_or["upper"], panel_p))
+cat(sprintf("Panel co-reactivity (>=2): SLE %d/%d (%.1f%%) vs HC %d/%d (%.1f%%); OR %.2f (%.2f-%.2f), Fisher p = %.4f\n\n",
+            co_sle, n_sle, 100*co_sle/n_sle, co_hc, n_hc, 100*co_hc/n_hc,
+            co_or["or"], co_or["lower"], co_or["upper"], co_p))
+
+write.csv(res, "seropositivity_results.csv", row.names = FALSE)
