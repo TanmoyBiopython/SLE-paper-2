@@ -1,0 +1,123 @@
+###############################################################################
+# PEIR component 2 - weighted positional (Borda) scoring
+#
+# Ranked study-panel pathogens from every reactive participant are converted
+# into a weighted cumulative Borda score, so that pathogens appearing
+# consistently at lower ranks still contribute to the hierarchy.
+#
+# Rank-specific weight factor
+#     W_r = N - r + 1
+# where r is the rank position and N is the maximum number of co-reactivities
+# observed in any single sample within that cohort.
+#     SLE:  N = 5  ->  W = 5, 4, 3, 2, 1
+#     HC :  N = 3  ->  W = 3, 2, 1
+#
+# Weighted score component for pathogen p at rank r
+#     P(p,r) = W_r * n(p,r)      n = occurrences of p at rank r
+#
+# Net cumulative Borda score
+#     S(p) = sum over r of P(p,r)
+#
+# Pathogens are ordered by descending S(p) to give the Pathogen
+# Immunodominance Hierarchy.
+#
+# All reactive participants contribute, including single-positive samples,
+# which supply one rank 1 occurrence each.
+###############################################################################
+
+panel <- c("JE","DENV","Zika","WNV","CHIKV","M. pneumoniae","C. pneumoniae",
+           "C. trachomatis","Leptospira","Scrub typhus","Brucella")
+
+## ---- Ranked panel reactivities, in descending per cent excess --------------
+
+sle_ranks <- list(
+  "SLE-03" = c("WNV"),
+  "SLE-05" = c("Brucella"),
+  "SLE-06" = c("C. trachomatis","WNV"),
+  "SLE-07" = c("Zika","CHIKV"),
+  "SLE-08" = c("C. pneumoniae","Zika","C. trachomatis","WNV","CHIKV"),
+  "SLE-10" = c("Zika","WNV","C. trachomatis","CHIKV","C. pneumoniae"),
+  "SLE-11" = c("CHIKV"),
+  "SLE-12" = c("WNV"),
+  "SLE-13" = c("DENV","WNV","Zika"),
+  "SLE-19" = c("CHIKV"),
+  "SLE-22" = c("WNV"),
+  "SLE-23" = c("C. pneumoniae","CHIKV","Zika","WNV"),
+  "SLE-24" = c("Zika","M. pneumoniae"),
+  "SLE-27" = c("CHIKV")
+)
+
+hc_ranks <- list(
+  "HC-3"  = c("M. pneumoniae"),
+  "HC-9"  = c("Zika"),
+  "HC-10" = c("WNV"),
+  "HC-12" = c("Zika"),
+  "HC-16" = c("Zika","WNV"),
+  "HC-20" = c("WNV"),
+  "HC-22" = c("WNV","C. trachomatis"),
+  "HC-23" = c("WNV","Brucella","C. trachomatis"),
+  "HC-25" = c("WNV"),
+  "HC-28" = c("WNV"),
+  "HC-32" = c("Brucella","WNV","C. pneumoniae"),
+  "HC-36" = c("WNV")
+)
+
+## ---- Scoring ---------------------------------------------------------------
+
+rank_matrix <- function(ranks, panel) {
+  N <- max(lengths(ranks))
+  m <- matrix(0L, nrow = length(panel), ncol = N,
+              dimnames = list(panel, paste0("Rank ", seq_len(N))))
+  for (s in ranks)
+    for (r in seq_along(s)) m[s[r], r] <- m[s[r], r] + 1L
+  m
+}
+
+borda <- function(ranks, panel) {
+  m <- rank_matrix(ranks, panel)
+  N <- ncol(m)
+  W <- N - seq_len(N) + 1L                    # W_r = N - r + 1
+  comp <- sweep(m, 2, W, "*")                 # P(p,r) = W_r * n(p,r)
+  S <- rowSums(comp)
+  list(N = N, W = W, n = m, comp = comp, S = S)
+}
+
+s <- borda(sle_ranks, panel)
+h <- borda(hc_ranks,  panel)
+
+## Hierarchy position; pathogens with no occurrences are unranked
+hier <- function(S) {
+  r <- rep(NA_integer_, length(S)); names(r) <- names(S)
+  nz <- S > 0
+  r[nz] <- rank(-S[nz], ties.method = "min")
+  r
+}
+
+out <- data.frame(
+  pathogen   = panel,
+  sle_total  = as.integer(rowSums(s$n)),
+  sle_S      = as.integer(s$S),
+  sle_rank   = hier(s$S),
+  hc_total   = as.integer(rowSums(h$n)),
+  hc_S       = as.integer(h$S),
+  hc_rank    = hier(h$S),
+  row.names  = NULL, stringsAsFactors = FALSE
+)
+out <- out[order(-out$sle_S, -out$hc_S), ]
+
+cat("\nSLE   N =", s$N, "  weights:", paste(s$W, collapse = ", "),
+    "  participants:", length(sle_ranks), "\n")
+cat("HC    N =", h$N, "  weights:", paste(h$W, collapse = ", "),
+    "  participants:", length(hc_ranks),  "\n\n")
+
+cat("Rank-occurrence matrix - SLE\n");  print(s$n)
+cat("\nWeighted components - SLE\n");   print(s$comp)
+cat("\nRank-occurrence matrix - HC\n"); print(h$n)
+cat("\nWeighted components - HC\n");    print(h$comp)
+cat("\nPathogen Immunodominance Hierarchy\n"); print(out, row.names = FALSE)
+
+write.csv(out, "borda_scores.csv", row.names = FALSE)
+write.csv(cbind(pathogen = panel, as.data.frame(s$n)), "borda_rank_matrix_SLE.csv", row.names = FALSE)
+write.csv(cbind(pathogen = panel, as.data.frame(h$n)), "borda_rank_matrix_HC.csv",  row.names = FALSE)
+write.csv(cbind(pathogen = panel, as.data.frame(s$comp)), "borda_components_SLE.csv", row.names = FALSE)
+write.csv(cbind(pathogen = panel, as.data.frame(h$comp)), "borda_components_HC.csv",  row.names = FALSE)
