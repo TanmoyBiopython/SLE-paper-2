@@ -1,0 +1,135 @@
+###############################################################################
+# Butterfly plot - Pathogen Immunodominance Hierarchy
+#
+# Mirrored horizontal bars of the net cumulative Borda score S(p), SLE to the
+# left and healthy controls to the right.
+#
+# The two cohorts carry different rank weight vectors, because N differs
+# (SLE N = 5, W = 5,4,3,2,1;  HC N = 3, W = 3,2,1). Raw scores are therefore
+# comparable within a cohort but not as absolute magnitudes between them.
+# Set normalise <- TRUE to plot each pathogen's share of its cohort's total
+# score instead, which removes that asymmetry.
+#
+# Renders to the Plots pane. Export manually with Export > Save as PDF.
+###############################################################################
+
+library(ggplot2)
+library(grid)
+
+normalise <- FALSE      # FALSE = raw Borda score; TRUE = share of cohort total
+drop_zero <- FALSE      # TRUE removes pathogens with no reactivity in either cohort
+
+## ---- Borda scores ----------------------------------------------------------
+
+d <- data.frame(
+  pathogen = c("WNV","CHIKV","Zika","C. trachomatis","C. pneumoniae",
+               "Brucella","DENV","M. pneumoniae","JE","Leptospira","Scrub typhus"),
+  group    = c("Arboviral","Arboviral","Arboviral","Bacterial","Bacterial",
+               "Bacterial","Arboviral","Bacterial","Arboviral","Bacterial","Bacterial"),
+  sle      = c(31, 26, 25, 11, 11, 5, 5, 4, 0, 0, 0),
+  hc       = c(25,  0,  9,  3,  1, 5, 0, 3, 0, 0, 0),
+  stringsAsFactors = FALSE
+)
+
+if (drop_zero) d <- d[d$sle > 0 | d$hc > 0, ]
+
+## Ordering: descending SLE score, ties broken on the control score
+d <- d[order(-d$sle, -d$hc), ]
+d$pathogen <- factor(d$pathogen, levels = rev(d$pathogen))
+
+value_lab <- "Net cumulative Borda score (Sp)"
+if (normalise) {
+  d$sle <- 100 * d$sle / sum(d$sle)
+  d$hc  <- 100 * d$hc  / sum(d$hc)
+  value_lab <- "Share of cohort total Borda score (%)"
+}
+
+## Long form, SLE mirrored to the left
+pd <- rbind(
+  data.frame(pathogen = d$pathogen, cohort = "SLE",
+             value = d$sle, x = -d$sle, stringsAsFactors = FALSE),
+  data.frame(pathogen = d$pathogen, cohort = "Healthy control",
+             value = d$hc,  x =  d$hc,  stringsAsFactors = FALSE)
+)
+pd$cohort <- factor(pd$cohort, levels = c("SLE", "Healthy control"))
+
+zero <- d$pathogen[d$sle == 0 & d$hc == 0]
+
+## ---- Scale -----------------------------------------------------------------
+
+lim  <- max(c(d$sle, d$hc))
+pad  <- lim * 0.28
+step <- if (normalise) 10 else if (lim > 20) 10 else 5
+brks <- seq(-floor(lim / step) * step, floor(lim / step) * step, by = step)
+
+## Validated two-hue pair; deliberately different from the forest plots, where
+## colour encodes pathogen group rather than cohort.
+pal <- c("SLE" = "#8C4B9E", "Healthy control" = "#3C8C4A")
+
+## ---- Plot ------------------------------------------------------------------
+
+p <- ggplot(pd, aes(x = x, y = pathogen, fill = cohort)) +
+
+  geom_col(width = 0.66) +
+  geom_vline(xintercept = 0, colour = "grey30", linewidth = 0.5) +
+
+  ## value labels, non-zero bars only
+  geom_text(data = subset(pd, value > 0),
+            aes(label = if (normalise) sprintf("%.1f", value) else value,
+                hjust = ifelse(x < 0, 1.25, -0.25)),
+            size = 3.0, colour = "grey20", show.legend = FALSE) +
+
+  ## pathogens absent from both cohorts
+  {if (length(zero))
+     annotate("text", x = 0, y = as.character(zero),
+              label = "not detected in either cohort",
+              size = 2.9, colour = "grey50", fontface = "italic", vjust = -0.1)} +
+
+  ## cohort headers, so identity is not carried by colour alone
+  annotate("text", x = -lim * 0.62, y = nlevels(pd$pathogen) + 0.85,
+           label = "SLE  (n = 24)", fontface = "bold", size = 3.4, colour = pal[["SLE"]]) +
+  annotate("text", x =  lim * 0.62, y = nlevels(pd$pathogen) + 0.85,
+           label = "Healthy controls  (n = 34)", fontface = "bold", size = 3.4,
+           colour = pal[["Healthy control"]]) +
+
+  scale_x_continuous(name = value_lab, breaks = brks, labels = abs(brks),
+                     limits = c(-lim - pad, lim + pad), expand = c(0, 0)) +
+  scale_y_discrete(expand = expansion(add = c(0.6, 1.4))) +
+  scale_fill_manual(values = pal, name = NULL) +
+
+  labs(
+    y = NULL,
+    title = "Pathogen Immunodominance Hierarchy",
+    subtitle = "Weighted positional (Borda) scores across all ranked study-panel reactivities",
+    caption = paste0(
+      "Rank weights W_r = N - r + 1, with N the maximum co-reactivity in each cohort: ",
+      "SLE N = 5 (W = 5,4,3,2,1), controls N = 3 (W = 3,2,1).\n",
+      "Weight vectors therefore differ between cohorts, so bar lengths compare positions in the hierarchy, ",
+      "not absolute magnitudes.\n",
+      "All reactive participants contribute; a single-positive sample supplies one rank 1 occurrence. ",
+      "Scores carry no test of significance.")
+  ) +
+
+  theme_minimal(base_size = 11, base_family = "sans") +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_line(colour = "grey93", linewidth = 0.3),
+    axis.line.x  = element_line(colour = "grey30", linewidth = 0.4),
+    axis.ticks.x = element_line(colour = "grey30", linewidth = 0.4),
+    axis.ticks.y = element_blank(),
+    axis.text.y  = element_text(face = "bold", colour = "grey15"),
+    axis.text.x  = element_text(colour = "grey35", size = 8.5),
+    axis.title.x = element_text(colour = "grey25", size = 9.5, margin = margin(t = 6)),
+    legend.position = "bottom",
+    legend.key.size = unit(0.42, "cm"),
+    legend.text  = element_text(size = 9),
+    plot.title    = element_text(face = "bold", size = 12.5),
+    plot.subtitle = element_text(colour = "grey35", size = 9.5),
+    plot.caption  = element_text(colour = "grey40", size = 8, hjust = 0),
+    plot.margin   = margin(10, 14, 10, 10)
+  )
+
+print(p)
+
+## Suggested export size: 8.5 x 5.5 inches.
