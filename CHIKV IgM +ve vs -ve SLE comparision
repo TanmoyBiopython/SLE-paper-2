@@ -1,0 +1,155 @@
+## ============================================================================
+##  Main figure for the anti-nucleosome finding
+##  CHIKV IgM-positive (n = 6) vs CHIKV IgM-negative (n = 12) SLE
+##
+##  Panel A  every sample's anti-nucleosome intensity against the class +
+##           threshold - the panel that carries the claim
+##  Panel B  the three chromatin antigens per sample - shows the claim is not
+##           a single-antigen artefact
+##
+##  Renders to the Plots pane. Nothing is written to disk.
+## ============================================================================
+
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(tidyr); library(tibble)
+  library(ggplot2); library(scales)
+})
+
+xlsx_path <- "CHIKV_positive_autoantibody_profile_4_0.xlsx"
+
+col_pos  <- "#2a78d6"   # CHIKV IgM positive
+col_neg  <- "#eb6834"   # CHIKV IgM negative
+seq_lo   <- "#f4f7fb"
+seq_hi   <- "#16477f"
+ink      <- "#0b0b0b"
+ink_soft <- "#52514e"
+grid_col <- "#e7e7e4"
+THRESH   <- 11          # manufacturer threshold for class +
+
+theme_fig <- function(base = 11) {
+  theme_minimal(base_size = base) +
+    theme(
+      plot.title       = element_text(face = "bold", colour = ink, size = base + 1),
+      plot.subtitle    = element_text(colour = ink_soft, size = base - 1),
+      plot.caption     = element_text(colour = ink_soft, size = base - 2, hjust = 0),
+      axis.title       = element_text(colour = ink_soft),
+      axis.text        = element_text(colour = ink),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.major.y = element_line(colour = grid_col, linewidth = 0.3),
+      strip.text       = element_text(face = "bold", colour = ink),
+      legend.position  = "bottom",
+      legend.title     = element_text(colour = ink_soft, size = base - 1)
+    )
+}
+
+num <- function(x) suppressWarnings(as.numeric(x))
+
+## --- data -------------------------------------------------------------------
+strip <- read_excel(xlsx_path, sheet = "Numeric strip Immunoline Report",
+                    col_names = FALSE, .name_repair = "minimal")[6:23, ]
+mast  <- read_excel(xlsx_path, sheet = "Autoantibody data",
+                    col_names = FALSE, .name_repair = "minimal")
+mast  <- mast[grepl("^SLE-", as.character(mast[[1]])), ]
+
+dat <- tibble(
+  code        = as.character(strip[[1]]),
+  dsDNA       = num(strip[[10]]),
+  Nucleosomes = num(strip[[11]]),
+  Histones    = num(strip[[12]])
+) |>
+  left_join(tibble(code  = as.character(mast[[1]]),
+                   chikv = num(mast[[2]])), by = "code") |>
+  mutate(grp = factor(ifelse(!is.na(chikv), "CHIKV IgM+", "CHIKV IgM-"),
+                      levels = c("CHIKV IgM+", "CHIKV IgM-")))
+
+n_lab <- dat |> count(grp) |>
+  mutate(lab = sprintf("%s\n(n = %d)", grp, n)) |> select(grp, lab)
+dat <- left_join(dat, n_lab, by = "grp") |>
+  mutate(lab = factor(lab, levels = n_lab$lab))
+
+## ---------------------------------------------------------------------------
+## Panel A - the floor effect, one point per sample
+## ---------------------------------------------------------------------------
+k_pos <- sum(dat$Nucleosomes[dat$grp == "CHIKV IgM+"] >= THRESH)
+k_neg <- sum(dat$Nucleosomes[dat$grp == "CHIKV IgM-"] >= THRESH)
+
+pA <- ggplot(dat, aes(lab, Nucleosomes)) +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = -2, ymax = THRESH,
+           fill = "#f5f5f3") +
+  geom_hline(yintercept = THRESH, colour = ink_soft, linetype = "22",
+             linewidth = 0.4) +
+  annotate("text", x = -Inf, y = THRESH - 1.6, hjust = -0.04, vjust = 1,
+           label = "negative or borderline (class o and (+))",
+           size = 3, colour = ink_soft) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.42,
+               colour = ink_soft, linewidth = 0.35, fatten = 0) +
+  geom_point(aes(colour = grp), size = 3.2, alpha = 0.9,
+             position = position_jitter(width = 0.10, height = 0, seed = 7)) +
+  scale_colour_manual(values = c("CHIKV IgM+" = col_pos,
+                                 "CHIKV IgM-" = col_neg), guide = "none") +
+  scale_y_continuous(limits = c(-2, 50), breaks = c(0, 11, 20, 30, 40, 50),
+                     expand = c(0, 0)) +
+  labs(
+    title    = "Anti-nucleosome antibodies in SLE by CHIKV IgM status",
+    subtitle = sprintf(
+      "Positive at class + or above: %d of 6 versus %d of 12. Fisher p = 0.054, OR 13.0 (95%% CI 0.60 to 281)",
+      k_pos, k_neg),
+    x = NULL, y = "Anti-nucleosome intensity (Immunoline)",
+    caption = paste0(
+      "Each point is one sample; bar is the group median. Dashed line is the manufacturer threshold for class + (intensity 11).\n",
+      "The separation is a floor effect: no CHIKV IgM-positive sample falls below the threshold, while six IgM-negative samples sit at or near zero.")
+  ) +
+  theme_fig()
+
+print(pA)
+
+## ---------------------------------------------------------------------------
+## Panel B - the whole chromatin arm, sample by sample
+## ---------------------------------------------------------------------------
+chrom <- dat |>
+  pivot_longer(c(dsDNA, Nucleosomes, Histones),
+               names_to = "antigen", values_to = "intensity") |>
+  mutate(antigen = factor(antigen,
+                          levels = c("Histones", "Nucleosomes", "dsDNA")),
+         positive = intensity >= THRESH)
+
+ord <- dat |> arrange(grp, desc(Nucleosomes)) |> pull(code)
+chrom$code <- factor(chrom$code, levels = ord)
+
+pB <- ggplot(chrom, aes(code, antigen, fill = intensity)) +
+  geom_tile(colour = "white", linewidth = 0.8) +
+  geom_tile(data = filter(chrom, positive), fill = NA,
+            colour = ink, linewidth = 0.5) +
+  geom_text(aes(label = intensity,
+                colour = intensity >= 55), size = 2.8, show.legend = FALSE) +
+  scale_colour_manual(values = c("TRUE" = "white", "FALSE" = ink)) +
+  scale_fill_gradient(low = seq_lo, high = seq_hi, limits = c(0, 115),
+                      name = "Intensity") +
+  facet_grid(~ grp, scales = "free_x", space = "free_x") +
+  labs(
+    title    = "The anti-chromatin arm, sample by sample",
+    subtitle = "dsDNA, nucleosomes and histones. Outlined cells are at class + or above",
+    x = NULL, y = NULL,
+    caption = paste0(
+      "Samples ordered within each group by anti-nucleosome intensity. Six IgM-negative samples are blank across all three antigens;\n",
+      "no IgM-positive sample is. Anti-chromatin antigens positive per sample: median 3 versus 0.5, exact permutation p = 0.040.")
+  ) +
+  theme_fig() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8),
+        panel.grid = element_blank())
+
+print(pB)
+
+## ---------------------------------------------------------------------------
+## Combine into one figure if patchwork is installed
+## ---------------------------------------------------------------------------
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  library(patchwork)
+  fig <- (pA / pB) +
+    plot_annotation(tag_levels = "A") +
+    plot_layout(heights = c(1, 0.85))
+  print(fig)
+} else {
+  message("install.packages('patchwork') to print A and B as one figure")
+}
